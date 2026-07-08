@@ -304,18 +304,22 @@ class APIHandler(BaseHTTPRequestHandler):
                     ORDER BY relevance DESC, sales DESC LIMIT 20
                 """,(f'%{q}%',f'{q}%',f'%{q}%',f'%{q}%',f'%{q}%',f'%{q}%')).fetchall()
                 self._json({'code':0,'data':[dict(r) for r in rows]})
+                db.close(); return
             elif path == '/api/search/suggest':
                 q = params.get('q',[''])[0].strip()
                 if not q: self._json({'code':0,'data':[]}); db.close(); return
                 rows = db.execute("SELECT DISTINCT name FROM products WHERE name LIKE ? LIMIT 8",(f'%{q}%',)).fetchall()
                 self._json({'code':0,'data':[r['name'] for r in rows]})
+                db.close(); return
             elif path == '/api/search/hot':
                 rows = db.execute("SELECT name FROM products ORDER BY sales DESC LIMIT 8").fetchall()
                 self._json({'code':0,'data':[r['name'] for r in rows]})
+                db.close(); return
             elif path == '/api/search/history':
                 if not uid: self._json({'code':0,'data':[]}); db.close(); return
                 rows = db.execute("SELECT keyword FROM search_history WHERE user_id=? ORDER BY id DESC LIMIT 10",(uid,)).fetchall()
                 self._json({'code':0,'data':[r['keyword'] for r in rows]})
+                db.close(); return
             # Notifications
             elif path == '/api/notifications':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
