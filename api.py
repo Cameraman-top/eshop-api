@@ -29,6 +29,11 @@ def init_db():
             status INTEGER DEFAULT 1, seller_id INTEGER DEFAULT 0,
             created_at TEXT DEFAULT (datetime('now','localtime'))
         );
+        CREATE TABLE IF NOT EXISTS categories (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, name TEXT NOT NULL,
+            icon TEXT DEFAULT '📦',
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
         CREATE TABLE IF NOT EXISTS orders (
             id INTEGER PRIMARY KEY AUTOINCREMENT, order_no TEXT NOT NULL UNIQUE,
             user_id INTEGER NOT NULL, total REAL NOT NULL,
@@ -205,6 +210,11 @@ def init_db():
             ('Dyson V15 Detect','激光探测微尘',4990,5690,'🏠',8,12400,4.7,'[]',1000,0),
         ]
         db.executemany("INSERT INTO products (name,description,price,original_price,image,category_id,sales,rating,specs,stock,is_hot) VALUES (?,?,?,?,?,?,?,?,?,?,?)", products)
+    # Init categories
+    cc = db.execute("SELECT COUNT(*) FROM categories").fetchone()[0]
+    if cc == 0:
+        categories = [('手机','📱'),('电脑','💻'),('耳机','🎧'),('手表','⌚'),('平板','📋'),('相机','📷'),('配件','🔌'),('家电','🏠')]
+        db.executemany("INSERT INTO categories (name,icon) VALUES (?,?)", categories)
     # Init topics
     tc = db.execute("SELECT COUNT(*) FROM topics").fetchone()[0]
     if tc == 0:
@@ -598,7 +608,35 @@ class APIHandler(BaseHTTPRequestHandler):
                 db.commit()
                 row = db.execute("SELECT id,nickname,avatar,bio FROM users WHERE id=?",(uid,)).fetchone()
                 self._json({'code':0,'data':dict(row)})
-            # Orders
+            # Products CRUD (admin)
+            elif path == '/api/products':
+                action = body.get('action','create')
+                if action == 'create':
+                    name = body.get('name','').strip()
+                    if not name: self._json({'code':1,'msg':'商品名不能为空'},400); db.close(); return
+                    db.execute("INSERT INTO products (name,description,price,original_price,image,category_id,sales,rating,specs,stock,is_hot) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+                        (name, body.get('description',''), body.get('price',0), body.get('original_price',0),
+                         body.get('image','📦'), body.get('category_id',1), 0, 5.0,
+                         body.get('specs','[]'), body.get('stock',999), body.get('is_hot',0)))
+                    db.commit()
+                    pid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+                    self._json({'code':0,'data':{'id':pid}})
+                elif action == 'update':
+                    pid = body.get('id')
+                    if not pid: self._json({'code':1,'msg':'缺少商品ID'},400); db.close(); return
+                    db.execute("UPDATE products SET name=?,description=?,price=?,original_price=?,image=?,category_id=?,specs=?,stock=?,is_hot=? WHERE id=?",
+                        (body.get('name',''), body.get('description',''), body.get('price',0), body.get('original_price',0),
+                         body.get('image',''), body.get('category_id',1), body.get('specs','[]'), body.get('stock',999), body.get('is_hot',0), pid))
+                    db.commit()
+                    self._json({'code':0,'data':{'id':pid}})
+                elif action == 'delete':
+                    pid = body.get('id')
+                    if not pid: self._json({'code':1,'msg':'缺少商品ID'},400); db.close(); return
+                    db.execute("DELETE FROM products WHERE id=?",(pid,))
+                    db.commit()
+                    self._json({'code':0,'data':{}})
+                else:
+                    self._json({'code':1,'msg':'unknown action'})
             elif path == '/api/orders':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
                 items = body.get('items',[])
