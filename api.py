@@ -258,6 +258,10 @@ class APIHandler(BaseHTTPRequestHandler):
     def do_GET(self):
         path = urlparse(self.path).path
         params = parse_qs(urlparse(self.path).query)
+        # Root path
+        if path == '/' or path == '':
+            self._json({'code':0,'msg':'eShop Social API v1.0','endpoints':['/api/products','/api/categories','/api/cart','/api/orders','/api/user/login','/api/search','/api/live']})
+            return
         uid = self._auth(params)
         try:
             db = sqlite3.connect(DB_PATH); db.row_factory = sqlite3.Row
