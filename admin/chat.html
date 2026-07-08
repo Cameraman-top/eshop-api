@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>eShop 客服后台</title>
+<style>
+* { margin: 0; padding: 0; box-sizing: border-box; }
+body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; background: #f5f5f5; height: 100vh; display: flex; }
+/* 左侧会话列表 */
+.sidebar { width: 300px; background: #fff; border-right: 1px solid #e0e0e0; display: flex; flex-direction: column; }
+.sidebar-header { padding: 16px; border-bottom: 1px solid #e0e0e0; background: linear-gradient(135deg, #FF6B6B, #FF4D4F); color: #fff; }
+.sidebar-header h1 { font-size: 18px; font-weight: 600; }
+.sidebar-header .subtitle { font-size: 12px; opacity: 0.8; margin-top: 4px; }
+.session-list { flex: 1; overflow-y: auto; }
+.session-item { padding: 14px 16px; border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background 0.2s; }
+.session-item:hover { background: #fafafa; }
+.session-item.active { background: #fff0f0; border-left: 3px solid #FF4D4F; }
+.session-item .name { font-size: 14px; font-weight: 500; display: flex; justify-content: space-between; align-items: center; }
+.session-item .preview { font-size: 12px; color: #999; margin-top: 4px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.session-item .time { font-size: 11px; color: #bbb; margin-top: 2px; }
+.badge { background: #FF4D4F; color: #fff; font-size: 11px; padding: 2px 8px; border-radius: 10px; min-width: 20px; text-align: center; }
+/* 右侧聊天区 */
+.main { flex: 1; display: flex; flex-direction: column; }
+.chat-header { padding: 14px 20px; background: #fff; border-bottom: 1px solid #e0e0e0; display: flex; align-items: center; justify-content: space-between; }
+.chat-header .user-info { font-size: 15px; font-weight: 500; }
+.chat-header .close-btn { color: #999; cursor: pointer; font-size: 13px; border: none; background: none; }
+.chat-messages { flex: 1; padding: 20px; overflow-y: auto; background: #f9f9f9; }
+.chat-messages .empty { text-align: center; color: #ccc; margin-top: 100px; font-size: 14px; }
+.message { margin-bottom: 16px; display: flex; }
+.message.user { justify-content: flex-start; }
+.message.admin { justify-content: flex-end; }
+.message .bubble { max-width: 70%; padding: 10px 14px; border-radius: 16px; font-size: 14px; line-height: 1.6; word-break: break-word; }
+.message.user .bubble { background: #fff; border: 1px solid #eee; border-bottom-left-radius: 4px; }
+.message.admin .bubble { background: #FF4D4F; color: #fff; border-bottom-right-radius: 4px; }
+.message .time { font-size: 11px; color: #bbb; margin-top: 4px; }
+.message.admin .time { text-align: right; }
+.chat-input { padding: 12px 16px; background: #fff; border-top: 1px solid #e0e0e0; display: flex; gap: 10px; }
+.chat-input input { flex: 1; padding: 10px 16px; border: 1px solid #e0e0e0; border-radius: 20px; font-size: 14px; outline: none; }
+.chat-input input:focus { border-color: #FF4D4F; }
+.chat-input button { padding: 10px 24px; background: #FF4D4F; color: #fff; border: none; border-radius: 20px; font-size: 14px; cursor: pointer; font-weight: 500; }
+.chat-input button:hover { background: #e04345; }
+/* 无会话选中时的占位 */
+.placeholder { flex: 1; display: flex; align-items: center; justify-content: center; color: #ccc; font-size: 16px; }
+</style>
+</head>
+<body>
+
+<div class="sidebar">
+  <div class="sidebar-header">
+    <h1>💬 eShop 客服</h1>
+    <div class="subtitle">人工客服后台</div>
+  </div>
+  <div class="session-list" id="sessionList"></div>
+</div>
+
+<div class="main" id="mainPanel">
+  <div class="placeholder">👈 选择左侧会话开始回复</div>
+</div>
+
+<script>
+const API = 'https://localhost:8081';
+let currentSession = null;
+let sessions = [];
+let messages = [];
+
+// 加载会话列表
+async function loadSessions() {
+  try {
+    const res = await fetch(`${API}?action=sessions`);
+    const data = await res.json();
+    if (data.code === 0) {
+      sessions = data.data || [];
+      renderSessions();
+    }
+  } catch(e) { console.error(e); }
+}
+
+// 渲染会话列表
+function renderSessions() {
+  const el = document.getElementById('sessionList');
+  el.innerHTML = sessions.map(s => `
+    <div class="session-item ${currentSession && currentSession.id === s.id ? 'active' : ''}" 
+         onclick="selectSession(${s.id})">
+      <div class="name">
+        <span>${s.user_name || '匿名用户'}</span>
+        ${s.unread > 0 ? `<span class="badge">${s.unread}</span>` : ''}
+      </div>
+      <div class="preview">${s.last_message || '暂无消息'}</div>
+      <div class="time">${formatTime(s.updated_at)}</div>
+    </div>
+  `).join('');
+}
+
+// 选择会话
+async function selectSession(id) {
+  currentSession = sessions.find(s => s.id === id);
+  renderSessions();
+  renderChatPanel();
+  await loadMessages(id);
+}
+
+// 加载消息
+async function loadMessages(sessionId) {
+  try {
+    const res = await fetch(`${API}?action=messages&session_id=${sessionId}`);
+    const data = await res.json();
+    if (data.code === 0) {
+      messages = data.data || [];
+      renderMessages();
+      scrollToBottom();
+      loadSessions(); // 刷新未读数
+    }
+  } catch(e) { console.error(e); }
+}
+
+// 发送消息
+async function sendMessage() {
+  const input = document.getElementById('msgInput');
+  const text = input.value.trim();
+  if (!text || !currentSession) return;
+  
+  try {
+    await fetch(`${API}?action=messages&session_id=${currentSession.id}`, {
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'},
+      body: JSON.stringify({ sender_type: 'admin', content: text })
+    });
+    input.value = '';
+    await loadMessages(currentSession.id);
+  } catch(e) { console.error(e); }
+}
+
+// 关闭会话
+async function closeSession() {
+  if (!currentSession) return;
+  await fetch(`${API}?action=close`, {
+    method: 'POST',
+    headers: {'Content-Type': 'application/json'},
+    body: JSON.stringify({ session_id: currentSession.id })
+  });
+  currentSession = null;
+  document.getElementById('mainPanel').innerHTML = '<div class="placeholder">👈 选择左侧会话开始回复</div>';
+  loadSessions();
+}
+
+// 渲染聊天面板
+function renderChatPanel() {
+  if (!currentSession) {
+    document.getElementById('mainPanel').innerHTML = '<div class="placeholder">👈 选择左侧会话开始回复</div>';
+    return;
+  }
+  document.getElementById('mainPanel').innerHTML = `
+    <div class="chat-header">
+      <div class="user-info">💬 ${currentSession.user_name || '匿名用户'}</div>
+      <button class="close-btn" onclick="closeSession()">关闭会话</button>
+    </div>
+    <div class="chat-messages" id="chatMessages"></div>
+    <div class="chat-input">
+      <input id="msgInput" type="text" placeholder="输入回复..." onkeypress="if(event.key==='Enter')sendMessage()" />
+      <button onclick="sendMessage()">发送</button>
+    </div>
+  `;
+}
+
+// 渲染消息列表
+function renderMessages() {
+  const el = document.getElementById('chatMessages');
+  if (!el) return;
+  if (messages.length === 0) {
+    el.innerHTML = '<div class="empty">暂无消息</div>';
+    return;
+  }
+  el.innerHTML = messages.map(m => `
+    <div class="message ${m.sender_type}">
+      <div>
+        <div class="bubble">${m.content.replace(/\n/g, '<br>')}</div>
+        <div class="time">${formatTime(m.created_at)}</div>
+      </div>
+    </div>
+  `).join('');
+}
+
+function scrollToBottom() {
+  const el = document.getElementById('chatMessages');
+  if (el) setTimeout(() => el.scrollTop = el.scrollHeight, 100);
+}
+
+function formatTime(t) {
+  if (!t) return '';
+  const d = new Date(t);
+  return `${d.getHours().toString().padStart(2,'0')}:${d.getMinutes().toString().padStart(2,'0')}`;
+}
+
+// 初始化
+loadSessions();
+// 自动刷新（每 5 秒）
+setInterval(() => {
+  loadSessions();
+  if (currentSession) loadMessages(currentSession.id);
+}, 5000);
+</script>
+</body>
+</html>

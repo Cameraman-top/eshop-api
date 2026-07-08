@@ -1,0 +1,14 @@
+services:
+  - type: web
+    name: eshop-api
+    env: python
+    region: singapore
+    buildCommand: ""
+    startCommand: python api.py
+    envVars:
+      - key: PORT
+        value: 8081
+    disk:
+      name: eshop-data
+      mountPath: /opt/render/project/src
+      sizeGB: 1

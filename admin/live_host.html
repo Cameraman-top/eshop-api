@@ -1,0 +1,92 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>直播推流 - OBS</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;color:#fff;font-family:-apple-system,sans-serif;padding:40px 20px;max-width:500px;margin:0 auto}
+h2{text-align:center;margin-bottom:30px}
+.card{background:#16213e;border-radius:12px;padding:20px;margin-bottom:16px}
+.card h3{font-size:15px;color:#e94560;margin-bottom:12px}
+.row{display:flex;justify-content:space-between;align-items:center;padding:8px 0;border-bottom:1px solid #0f3460;font-size:14px}
+.row .label{color:#aaa}
+.row .val{color:#fff;font-family:monospace;font-size:13px;word-break:break-all;max-width:60%;text-align:right}
+.btn-copy{background:#e94560;border:none;color:#fff;padding:6px 14px;border-radius:6px;cursor:pointer;font-size:12px}
+.btn-start{display:block;width:100%;padding:14px;background:#e94560;border:none;color:#fff;font-size:16px;border-radius:12px;cursor:pointer;margin-top:16px}
+.btn-stop{display:block;width:100%;padding:14px;background:#555;border:none;color:#fff;font-size:16px;border-radius:12px;cursor:pointer;margin-top:16px;display:none}
+.status-bar{text-align:center;padding:10px;border-radius:8px;margin-bottom:16px;font-size:14px}
+.status-bar.live{background:#0f3460;color:#4caf50}
+.status-bar.off{background:#0f3460;color:#999}
+.obs-guide{background:#0f3460;border-radius:8px;padding:16px;margin-top:16px;font-size:13px;line-height:1.8}
+.obs-guide code{background:#16213e;padding:2px 6px;border-radius:4px;color:#e94560}
+.chat-area{height:200px;background:#0f3460;border-radius:8px;overflow-y:auto;padding:10px;margin-top:16px;font-size:13px}
+.msg{margin-bottom:4px}.msg .name{color:#e94560;font-weight:600}.msg .text{color:#ccc}
+</style>
+</head>
+<body>
+<h2>🔴 腾讯云直播</h2>
+<div class="status-bar off" id="statusBar">⚫ 未开播</div>
+
+<div class="card">
+  <h3>OBS 推流设置</h3>
+  <div class="row"><span class="label">服务器</span><span class="val" id="obsServer">rtmp://233010.push.tlivecloud.com/live/</span><button class="btn-copy" onclick="copy('obsServer')">复制</button></div>
+  <div class="row"><span class="label">串流密钥</span><span class="val" id="obsKey">eshop?txSecret=7f6dc779dfbe75b8b62f6a1d2026ad2c&txTime=6A47A762</span><button class="btn-copy" onclick="copy('obsKey')">复制</button></div>
+</div>
+
+<div class="card">
+  <h3>播放地址</h3>
+  <div class="row"><span class="label">WebRTC</span><span class="val" id="playWebRTC">webrtc://live.cameraman.top/live/eshop</span><button class="btn-copy" onclick="copy('playWebRTC')">复制</button></div>
+  <div class="row"><span class="label">HLS</span><span class="val" id="playHLS">http://live.cameraman.top/live/eshop.m3u8</span><button class="btn-copy" onclick="copy('playHLS')">复制</button></div>
+</div>
+
+<div class="obs-guide">
+  <b>OBS 推流步骤：</b><br>
+  1. 打开 OBS → 设置 → 推流<br>
+  2. 服务选择「自定义」<br>
+  3. 填入上方「服务器」和「串流密钥」<br>
+  4. 添加「视频捕获设备」作为源<br>
+  5. 点击「开始推流」
+</div>
+
+<button class="btn-start" id="startBtn" onclick="startStream()">开始直播（通知观众）</button>
+<button class="btn-stop" id="stopBtn" onclick="stopStream()" style="display:none">结束直播</button>
+
+<div class="chat-area" id="chatArea"><div style="color:#666;text-align:center;padding-top:60px">观众消息</div></div>
+
+<script>
+let roomId=null, polling=false;
+
+async function startStream(){
+  const res=await fetch('/api/rtc/start',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({title:'直播中'})});
+  roomId=(await res.json()).room_id;
+  document.getElementById('statusBar').textContent='🔴 直播中 - 请用 OBS 推流';
+  document.getElementById('statusBar').className='status-bar live';
+  document.getElementById('startBtn').style.display='none';
+  document.getElementById('stopBtn').style.display='block';
+  polling=true;
+  pollChat();
+}
+
+async function stopStream(){
+  if(roomId) await fetch('/api/rtc/stop',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room_id:roomId})});
+  document.getElementById('statusBar').textContent='⚫ 已下播';
+  document.getElementById('statusBar').className='status-bar off';
+  document.getElementById('startBtn').style.display='block';
+  document.getElementById('stopBtn').style.display='none';
+  polling=false; roomId=null;
+}
+
+function copy(id){const el=document.getElementById(id);navigator.clipboard.writeText(el.textContent).then(()=>{const b=el.nextElementSibling;b.textContent='✓';setTimeout(()=>b.textContent='复制',1500);});}
+
+async function pollChat(){
+  if(!roomId||!polling) return;
+  try{
+    const res=await fetch('/api/rtc/chat?room_id='+roomId);
+    document.getElementById('chatArea').innerHTML=(await res.json()).map(m=>`<div class="msg"><span class="name">${m.user}:</span> <span class="text">${m.text}</span></div>`).join('');
+  }catch(e){}
+  if(polling) setTimeout(pollChat,2000);
+}
+</script>
+</body>
+</html>

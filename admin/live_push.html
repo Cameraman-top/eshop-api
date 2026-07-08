@@ -1,0 +1,100 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>浏览器推流 - 腾讯云</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#1a1a2e;color:#fff;font-family:-apple-system,sans-serif;padding:20px;max-width:500px;margin:0 auto}
+h2{text-align:center;margin:20px 0}
+video{width:100%;border-radius:12px;background:#000;margin-bottom:16px}
+.btn{display:block;width:100%;padding:14px;border:none;font-size:16px;border-radius:12px;cursor:pointer;margin-bottom:12px}
+.btn-push{background:#e94560;color:#fff}
+.btn-stop{background:#555;color:#fff}
+.status{text-align:center;padding:12px;border-radius:8px;font-size:14px;margin-bottom:12px}
+.status.pushing{background:#0f3460;color:#4caf50}
+.status.idle{background:#0f3460;color:#999}
+.status.error{background:#3d0000;color:#ff6b6b}
+.info{background:#16213e;border-radius:12px;padding:16px;font-size:13px;line-height:1.8}
+.info code{background:#0f3460;padding:2px 6px;border-radius:4px;color:#e94560;word-break:break-all}
+</style>
+</head>
+<body>
+<h2>🔴 浏览器直推腾讯云</h2>
+<video id="preview" autoplay muted playsinline></video>
+<div class="status idle" id="status">⚫ 未推流</div>
+<button class="btn btn-push" id="pushBtn" onclick="startPush()">开始推流</button>
+<button class="btn btn-stop" id="stopBtn" onclick="stopPush()" style="display:none">停止推流</button>
+<div class="info">
+  <b>推流地址：</b><br>
+  <code>webrtc://233010.push.tlivecloud.com/live/eshop</code><br><br>
+  <b>播放地址：</b><br>
+  <code>http://live.cameraman.top/live/eshop.m3u8</code>
+</div>
+
+<script>
+let pc=null, stream=null;
+
+async function startPush(){
+  try{
+    // Get camera
+    stream=await navigator.mediaDevices.getUserMedia({video:{width:640,height:480},audio:true});
+    document.getElementById('preview').srcObject=stream;
+
+    // Create PeerConnection
+    pc=new RTCPeerConnection({iceServers:[{urls:'stun:stun.l.google.com:19302'}]});
+    stream.getTracks().forEach(track=>pc.addTrack(track,stream));
+
+    // Create offer
+    const offer=await pc.createOffer();
+    await pc.setLocalDescription(offer);
+
+    // Wait for ICE gathering
+    await new Promise(r=>{
+      if(pc.iceGatheringState==='complete') r();
+      else pc.onicegatheringstatechange=()=>{if(pc.iceGatheringState==='complete') r();};
+    });
+
+    // WHIP: POST offer to Tencent Cloud
+    const whipUrl='https://233010.push.tlivecloud.com/live/eshop?txSecret=7f6dc779dfbe75b8b62f6a1d2026ad2c&txTime=6A47A762';
+    const resp=await fetch(whipUrl,{
+      method:'POST',
+      headers:{'Content-Type':'application/sdp'},
+      body:pc.localDescription.sdp
+    });
+
+    if(!resp.ok) throw new Error('WHIP failed: '+resp.status);
+
+    const answerSdp=await resp.text();
+    await pc.setRemoteDescription(new RTCSessionDescription({type:'answer',sdp:answerSdp}));
+
+    document.getElementById('status').textContent='🔴 推流中 - 观众可观看';
+    document.getElementById('status').className='status pushing';
+    document.getElementById('pushBtn').style.display='none';
+    document.getElementById('stopBtn').style.display='block';
+
+    pc.onconnectionstatechange=()=>{
+      if(pc.connectionState==='failed'||pc.connectionState==='disconnected'){
+        document.getElementById('status').textContent='⚠️ 连接断开';
+        document.getElementById('status').className='status error';
+      }
+    };
+  }catch(e){
+    document.getElementById('status').textContent='❌ '+e.message;
+    document.getElementById('status').className='status error';
+    console.error(e);
+  }
+}
+
+function stopPush(){
+  if(pc){pc.close();pc=null;}
+  if(stream){stream.getTracks().forEach(t=>t.stop());stream=null;}
+  document.getElementById('preview').srcObject=null;
+  document.getElementById('status').textContent='⚫ 已停止';
+  document.getElementById('status').className='status idle';
+  document.getElementById('pushBtn').style.display='block';
+  document.getElementById('stopBtn').style.display='none';
+}
+</script>
+</body>
+</html>

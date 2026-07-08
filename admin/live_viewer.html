@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh">
+<head>
+<meta charset="UTF-8"><meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>直播观看</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#000;color:#fff;font-family:-apple-system,sans-serif;height:100vh;display:flex;flex-direction:column}
+.header{padding:10px 16px;display:flex;align-items:center;background:rgba(0,0,0,0.8)}
+.back{background:none;border:none;color:#fff;font-size:20px;cursor:pointer;margin-right:12px}
+.host-name{font-size:14px;font-weight:600}
+.viewer-badge{margin-left:12px;font-size:12px;color:#999}
+.video-container{flex:1;display:flex;justify-content:center;align-items:center;background:#111;position:relative}
+video{width:100%;max-height:100%;background:#000}
+.offline-overlay{position:absolute;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.7);display:flex;flex-direction:column;justify-content:center;align-items:center;z-index:10}
+.offline-overlay h3{font-size:18px;margin-bottom:8px}.offline-overlay p{color:#999}
+.chat-area{height:40%;background:#1a1a1a;display:flex;flex-direction:column}
+.messages{flex:1;overflow-y:auto;padding:10px;font-size:13px}
+.msg{margin-bottom:4px}.msg .name{color:#e94560;font-weight:600}.msg .text{color:#ddd}
+.input-bar{display:flex;padding:8px 12px;border-top:1px solid #333}
+.input-bar input{flex:1;background:#333;border:none;color:#fff;padding:10px 14px;border-radius:20px;font-size:14px;outline:none}
+.input-bar button{background:#e94560;border:none;color:#fff;padding:10px 18px;border-radius:20px;margin-left:8px;font-size:14px;cursor:pointer}
+.loading{position:absolute;top:50%;left:50%;transform:translate(-50%,-50%);text-align:center}
+.spinner{width:40px;height:40px;border:3px solid #333;border-top-color:#e94560;border-radius:50%;animation:spin 0.8s linear infinite;margin:0 auto 12px}
+@keyframes spin{to{transform:rotate(360deg)}}
+</style>
+</head>
+<body>
+<div class="header">
+  <button class="back" onclick="history.back()">←</button>
+  <div class="host-name" id="hostName">直播间</div>
+  <span class="viewer-badge" id="viewerBadge">0 观看</span>
+</div>
+<div class="video-container">
+  <div class="loading" id="loading"><div class="spinner"></div><p style="color:#999">等待主播推流...</p></div>
+  <video id="video" controls autoplay playsinline></video>
+  <div class="offline-overlay" id="offlineOverlay">
+    <h3>📡 主播已下播</h3><p>去看看其他直播间吧</p>
+  </div>
+</div>
+<div class="chat-area">
+  <div class="messages" id="chatMessages"><div style="color:#666;text-align:center;padding-top:40px">欢迎进入直播间</div></div>
+  <div class="input-bar">
+    <input id="chatInput" placeholder="说点什么..." onkeydown="if(event.key==='Enter')sendMsg()">
+    <button onclick="sendMsg()">发送</button>
+  </div>
+</div>
+
+<script>
+const params=new URLSearchParams(window.location.search);
+const roomId=params.get('room_id');
+// Fixed stream for demo
+const HLS_URL='http://live.cameraman.top/live/eshop.m3u8';
+
+document.getElementById('hostName').textContent='直播间 '+roomId;
+
+async function init(){
+  if(!roomId) return;
+  const res=await fetch('/api/rtc/status?room_id='+roomId);
+  if((await res.json()).live){
+    document.getElementById('offlineOverlay').style.display='none';
+    playStream();
+  }
+  pollChat(); pollViewers();
+}
+
+function playStream(){
+  const video=document.getElementById('video');
+  const loading=document.getElementById('loading');
+
+  // Safari natively supports HLS
+  if(video.canPlayType('application/vnd.apple.mpegurl')){
+    video.src=HLS_URL;
+    video.addEventListener('playing',()=>loading.style.display='none');
+    video.addEventListener('error',()=>{
+      loading.innerHTML='<p style="color:#e94560">等待主播推流中...</p><p style="color:#999;font-size:12px">请确保主播已用OBS推流</p>';
+    });
+  }else{
+    // Fallback: try to load flv.js or show message
+    loading.innerHTML='<p style="color:#e94560">请用 Safari 打开观看</p><p style="color:#999;font-size:12px">或安装 OBS 后由主播推流</p>';
+  }
+
+  // Hide loading after 10 seconds if not playing
+  setTimeout(()=>{
+    if(video.paused) loading.innerHTML='<p style="color:#e94560">未检测到推流</p><p style="color:#999;font-size:12px">请确保主播已用OBS推流</p>';
+  },10000);
+}
+
+function sendMsg(){
+  const text=document.getElementById('chatInput').value.trim();
+  if(!text) return;
+  fetch('/api/rtc/chat',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({room_id:roomId,user:'观众',text})});
+  document.getElementById('chatInput').value='';
+}
+
+async function pollViewers(){
+  try{
+    const res=await fetch('/api/rtc/viewers?room_id='+roomId);
+    document.getElementById('viewerBadge').textContent=((await res.json()).count||0)+' 观看';
+  }catch(e){}
+  setTimeout(pollViewers,3000);
+}
+
+async function pollChat(){
+  try{
+    const res=await fetch('/api/rtc/chat?room_id='+roomId);
+    document.getElementById('chatMessages').innerHTML=(await res.json()).map(m=>`<div class="msg"><span class="name">${m.user}:</span> <span class="text">${m.text}</span></div>`).join('');
+  }catch(e){}
+  setTimeout(pollChat,2000);
+}
+
+init();
+</script>
+</body>
+</html>
