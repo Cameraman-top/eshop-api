@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """eShop Social API - Python + SQLite 零依赖 三层社交商城"""
-import json, sqlite3, hashlib, hmac, base64, time, os, uuid
+import json, sqlite3, hashlib, hmac, base64, time, os, uuid, mimetypes
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
@@ -240,6 +240,20 @@ class APIHandler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(json.dumps(data,ensure_ascii=False).encode())
 
+    def _serve_static(self, path):
+        if path == '/': path = '/index.html'
+        filepath = os.path.join(os.path.dirname(__file__), 'admin', path.lstrip('/'))
+        if not os.path.isfile(filepath):
+            self._json({'code':1,'msg':'not found'},404)
+            return
+        content_type, _ = mimetypes.guess_type(filepath)
+        self.send_response(200)
+        self.send_header('Content-Type', content_type or 'text/html')
+        self.send_header('Access-Control-Allow-Origin','*')
+        self.end_headers()
+        with open(filepath, 'rb') as f:
+            self.wfile.write(f.read())
+
     def _auth(self, params):
         auth = self.headers.get('Authorization','')
         if auth.startswith('Bearer '):
@@ -261,6 +275,10 @@ class APIHandler(BaseHTTPRequestHandler):
         # Root path
         if path == '/' or path == '':
             self._json({'code':0,'msg':'eShop Social API v1.0','endpoints':['/api/products','/api/categories','/api/cart','/api/orders','/api/user/login','/api/search','/api/live']})
+            return
+        # Serve static files from admin/ directory
+        if not path.startswith('/api/'):
+            self._serve_static(path)
             return
         uid = self._auth(params)
         try:
