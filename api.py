@@ -165,36 +165,43 @@ def init_db():
             name TEXT NOT NULL, phone TEXT NOT NULL,
             province TEXT DEFAULT '', city TEXT DEFAULT '', district TEXT DEFAULT '',
             detail TEXT NOT NULL, is_default INTEGER DEFAULT 0,
- created_at TEXT DEFAULT (datetime('now','localtime'))
- );
- -- Search history
- CREATE TABLE IF NOT EXISTS search_history (
-     id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-     keyword TEXT NOT NULL,
-     created_at TEXT DEFAULT (datetime('now','localtime'))
- );
- -- Notifications
- CREATE TABLE IF NOT EXISTS notifications (
-     id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-     type TEXT NOT NULL, title TEXT NOT NULL, content TEXT DEFAULT '',
-     related_id INTEGER DEFAULT 0, is_read INTEGER DEFAULT 0,
-     created_at TEXT DEFAULT (datetime('now','localtime'))
- );
- -- Followers
- CREATE TABLE IF NOT EXISTS followers (
-     id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-     follow_id INTEGER NOT NULL,
-     created_at TEXT DEFAULT (datetime('now','localtime')),
-     UNIQUE(user_id, follow_id)
- );
- -- Referral earnings
- CREATE TABLE IF NOT EXISTS referral_earnings (
-     id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
-     buyer_id INTEGER NOT NULL, order_id INTEGER NOT NULL,
-     amount REAL NOT NULL, rate REAL DEFAULT 0.05,
-     status TEXT DEFAULT 'pending',
-     created_at TEXT DEFAULT (datetime('now','localtime'))
- );
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+        -- Search history
+        CREATE TABLE IF NOT EXISTS search_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+            keyword TEXT NOT NULL,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+        -- Notifications
+        CREATE TABLE IF NOT EXISTS notifications (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+            type TEXT NOT NULL, title TEXT NOT NULL, content TEXT DEFAULT '',
+            related_id INTEGER DEFAULT 0, is_read INTEGER DEFAULT 0,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+        -- Followers
+        CREATE TABLE IF NOT EXISTS followers (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+            follow_id INTEGER NOT NULL,
+            created_at TEXT DEFAULT (datetime('now','localtime')),
+            UNIQUE(user_id, follow_id)
+        );
+        -- Referral earnings
+        CREATE TABLE IF NOT EXISTS referral_earnings (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+            buyer_id INTEGER NOT NULL, order_id INTEGER NOT NULL,
+            amount REAL NOT NULL, rate REAL DEFAULT 0.05,
+            status TEXT DEFAULT 'pending',
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
+        -- Cart (P0: was missing; api_client.dart calls /api/cart/*)
+        CREATE TABLE IF NOT EXISTS cart (
+            id INTEGER PRIMARY KEY AUTOINCREMENT, user_id INTEGER NOT NULL,
+            product_id INTEGER NOT NULL, spec TEXT DEFAULT '',
+            quantity INTEGER NOT NULL DEFAULT 1,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        );
     """)
     # Init products
     count = db.execute("SELECT COUNT(*) FROM products").fetchone()[0]
@@ -225,6 +232,15 @@ def init_db():
 
 def notify(db, uid, type, title, content='', related_id=0):
     db.execute("INSERT INTO notifications (user_id,type,title,content,related_id) VALUES (?,?,?,?,?)",(uid,type,title,content,related_id))
+
+def _specs_to_list(specs):
+    # ponytail: 共享 helper，避免每个路由都写一遍 try/except json。specs 在 init_db 里就是 JSON 字符串
+    if specs is None: return []
+    if isinstance(specs, list): return specs
+    if isinstance(specs, str) and specs.startswith('['):
+        try: return json.loads(specs)
+        except: return []
+    return []
 
 def make_token(uid):
     payload = f'{uid}:{int(time.time())}'
@@ -387,14 +403,34 @@ class APIHandler(BaseHTTPRequestHandler):
             elif path == '/api/products/hot':
                 rows = db.execute("SELECT * FROM products WHERE is_hot=1 AND status=1 ORDER BY sales DESC LIMIT 10").fetchall()
                 self._json([dict(r) for r in rows])
-            elif path.startswith('/api/products/') and len(path.split('/'))==3:
+            elif path == '/api/categories':
+                # P0: 前端 api_client.getCategories 调这里，原来根本没实现，必 404
+                rows = db.execute("SELECT * FROM categories ORDER BY id ASC").fetchall()
+                self._json({'code':0,'data':[dict(r) for r in rows]})
+            elif path.startswith('/api/cart'):
+                # P0: 购物车整套路由原来不存在，api_client.dart:123 起六个方法全跑空
+                if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
+                # GET /api/cart/{uid}  -> 该用户的购物车，附带商品快照
+                parts = path.split('/')
+                if len(parts) == 3:
+                    self._json({'code':1,'msg':'缺少用户ID'},400); db.close(); return
+                target_uid = int(parts[2]) if len(parts) > 2 and parts[2].isdigit() else uid
+                rows = db.execute("""SELECT c.id,c.product_id,c.spec,c.quantity,p.name,p.price,p.image,p.stock
+                    FROM cart c LEFT JOIN products p ON c.product_id=p.id
+                    WHERE c.user_id=? ORDER BY c.id DESC""",(target_uid,)).fetchall()
+                self._json({'code':0,'data':[dict(r) for r in rows]})
+                db.close(); return
+            elif path.startswith('/api/products/') and len(path.split('/'))==4:
                 pid = path.split('/')[-1]
                 row = db.execute("SELECT * FROM products WHERE id=?",(pid,)).fetchone()
                 if row:
                     d = dict(row)
+                    # specs 存的是 JSON 字符串，前端 Product 直接 cast 会出错，统一成 list
+                    d['images'] = [d.get('image','')] if d.get('image') else []
+                    d['specs'] = _specs_to_list(d.get('specs'))
                     reviews = db.execute("SELECT r.*,u.nickname,u.avatar FROM reviews r LEFT JOIN users u ON r.user_id=u.id WHERE r.product_id=? ORDER BY r.id DESC LIMIT 20",(pid,)).fetchall()
                     d['reviews'] = [dict(r) for r in reviews]
-                    self._json(d)
+                    self._json({'code':0,'data':d})
                 else:
                     self._json({'code':1,'msg':'not found'},404)
             # Orders
@@ -439,7 +475,7 @@ class APIHandler(BaseHTTPRequestHandler):
             elif path == '/api/group_buys':
                 rows = db.execute("SELECT g.*,p.name,p.image,p.price as original_price FROM group_buys g LEFT JOIN products p ON g.product_id=p.id WHERE g.status='active' ORDER BY g.id DESC").fetchall()
                 self._json([dict(r) for r in rows])
-            elif path.startswith('/api/group_buys/') and len(path.split('/'))==3:
+            elif path.startswith('/api/group_buys/') and len(path.split('/'))==4:
                 gid = path.split('/')[-1]
                 row = db.execute("SELECT g.*,p.name,p.image FROM group_buys g LEFT JOIN products p ON g.product_id=p.id WHERE g.id=?",(gid,)).fetchone()
                 if row:
@@ -457,6 +493,12 @@ class APIHandler(BaseHTTPRequestHandler):
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
                 rows = db.execute("SELECT uc.*,c.title,c.amount,c.min_amount FROM user_coupons uc LEFT JOIN coupons c ON uc.coupon_id=c.id WHERE uc.user_id=? AND uc.status='unused'",(uid,)).fetchall()
                 self._json([dict(r) for r in rows])
+            elif path == '/api/coupons/my':
+                # P0: api_client.getMyCoupons 调这里（路径和 user_coupons 不一致）
+                if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
+                rows = db.execute("SELECT uc.*,c.title,c.amount,c.min_amount FROM user_coupons uc LEFT JOIN coupons c ON uc.coupon_id=c.id WHERE uc.user_id=? AND uc.status='unused'",(uid,)).fetchall()
+                self._json({'code':0,'data':[dict(r) for r in rows]})
+                db.close(); return
             # Seckill
             elif path == '/api/seckill':
                 rows = db.execute("SELECT s.*,p.name,p.image,p.price as original_price FROM seckill_events s LEFT JOIN products p ON s.product_id=p.id WHERE s.status!='ended' ORDER BY s.start_time").fetchall()
@@ -479,7 +521,7 @@ class APIHandler(BaseHTTPRequestHandler):
                 else:
                     rows = db.execute("SELECT p.*,u.nickname,u.avatar FROM posts p LEFT JOIN users u ON p.user_id=u.id WHERE p.status=1 ORDER BY p.id DESC LIMIT 30").fetchall()
                 self._json([dict(r) for r in rows])
-            elif path.startswith('/api/posts/') and len(path.split('/'))==3:
+            elif path.startswith('/api/posts/') and len(path.split('/'))==4:
                 pid = path.split('/')[-1]
                 row = db.execute("SELECT p.*,u.nickname,u.avatar FROM posts p LEFT JOIN users u ON p.user_id=u.id WHERE p.id=?",(pid,)).fetchone()
                 if row:
@@ -532,8 +574,11 @@ class APIHandler(BaseHTTPRequestHandler):
                 rid = params.get('room_id',[None])[0]
                 try: rid = int(rid)
                 except: pass
+                # P0: 原来 pop(str(id(self)))，每次请求 handler 都是不同对象，answer 永远取不出。
+                # POST /api/rtc/answer 用 peer 作为 key（前端不发就是 ''），GET 也用 peer 一致
+                peer = params.get('peer',[''])[0]
                 r = rtc_rooms.get(rid, {})
-                self._json({'sdp': r.get('answers',{}).pop(str(id(self)), None)})
+                self._json({'sdp': r.get('answers',{}).pop(peer, None)})
             elif path == '/api/rtc/chat':
                 rid = params.get('room_id',[None])[0]
                 try: rid = int(rid)
@@ -641,6 +686,39 @@ class APIHandler(BaseHTTPRequestHandler):
                     self._json({'code':0,'data':{}})
                 else:
                     self._json({'code':1,'msg':'unknown action'})
+            # Cart  (P0: 前端 api_client.dart:128 起的加购/改数/删除原本全部 404)
+            elif path == '/api/cart':
+                if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
+                action = body.get('action','add')
+                if action == 'add':
+                    pid = body.get('product_id'); spec = body.get('spec','') or ''; qty = body.get('quantity',1)
+                    if not pid: self._json({'code':1,'msg':'缺少商品ID'},400); db.close(); return
+                    # 同商品同规格合并
+                    existing = db.execute("SELECT id,quantity FROM cart WHERE user_id=? AND product_id=? AND spec=?",(uid,pid,spec)).fetchone()
+                    if existing:
+                        db.execute("UPDATE cart SET quantity=quantity+? WHERE id=?",(qty,existing['id']))
+                    else:
+                        db.execute("INSERT INTO cart (user_id,product_id,spec,quantity) VALUES (?,?,?,?)",(uid,pid,spec,qty))
+                    db.commit()
+                    self._json({'code':0,'msg':'已加入购物车'})
+                elif action == 'set_qty':
+                    cid = body.get('id'); qty = body.get('quantity',1)
+                    if not cid: self._json({'code':1,'msg':'缺少ID'},400); db.close(); return
+                    if qty <= 0:
+                        db.execute("DELETE FROM cart WHERE id=? AND user_id=?",(cid,uid))
+                    else:
+                        db.execute("UPDATE cart SET quantity=? WHERE id=? AND user_id=?",(qty,cid,uid))
+                    db.commit(); self._json({'code':0,'msg':'ok'})
+                elif action == 'remove':
+                    cid = body.get('id')
+                    if not cid: self._json({'code':1,'msg':'缺少ID'},400); db.close(); return
+                    db.execute("DELETE FROM cart WHERE id=? AND user_id=?",(cid,uid))
+                    db.commit(); self._json({'code':0,'msg':'ok'})
+                elif action == 'clear':
+                    db.execute("DELETE FROM cart WHERE user_id=?",(uid,))
+                    db.commit(); self._json({'code':0,'msg':'已清空'})
+                else:
+                    self._json({'code':1,'msg':'unknown action'},400)
             elif path == '/api/orders':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
                 items = body.get('items',[])
@@ -730,21 +808,31 @@ class APIHandler(BaseHTTPRequestHandler):
                     db.execute("INSERT INTO search_history (user_id,keyword) VALUES (?,?)",(uid,kw))
                     db.commit()
                 self._json({'code':0,'msg':'ok'})
-            # Follow / Unfollow
+            # Follow / Unfollow  (P0: 此前 elif 分支被下方第二次定义覆盖，bug)
+            # 兼容两种前端调用：
+            #   1) {user_id: X}                     -> followers 表 (api_client.dart 没用，但旧 admin 用)
+            #   2) {action: 'follow'|'unfollow', target_id: X}  -> follows 表 (社交帖子流)
+            # 为兼容历史两边都写。
             elif path == '/api/follow':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
-                fid = body.get('user_id')
-                if not fid or uid == fid: self._json({'code':1,'msg':'参数错误'},400); db.close(); return
-                db.execute("INSERT OR IGNORE INTO followers (user_id,follow_id) VALUES (?,?)",(uid,fid))
-                notify(db, fid, 'follow', '新粉丝', '有用户关注了你！')
-                db.commit()
-                self._json({'code':0,'msg':'已关注'})
-            elif path == '/api/unfollow':
-                if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
-                fid = body.get('user_id')
-                db.execute("DELETE FROM followers WHERE user_id=? AND follow_id=?",(uid,fid))
-                db.commit()
-                self._json({'code':0,'msg':'已取关'})
+                action = body.get('action')
+                target = body.get('target_id') or body.get('user_id')
+                if action is None:
+                    action = 'follow' if 'user_id' in body else 'follow'
+                if target is None:
+                    self._json({'code':1,'msg':'参数错误'},400); db.close(); return
+                if action == 'follow':
+                    if uid == target: self._json({'code':1,'msg':'不能关注自己'},400); db.close(); return
+                    db.execute("INSERT OR IGNORE INTO followers (user_id,follow_id) VALUES (?,?)",(uid,target))
+                    db.execute("INSERT OR IGNORE INTO follows (follower_id,following_id) VALUES (?,?)",(uid,target))
+                    notify(db, target, 'follow', '新粉丝', '有用户关注了你！')
+                    db.commit(); self._json({'code':0,'msg':'已关注'})
+                elif action == 'unfollow':
+                    db.execute("DELETE FROM followers WHERE user_id=? AND follow_id=?",(uid,target))
+                    db.execute("DELETE FROM follows WHERE follower_id=? AND following_id=?",(uid,target))
+                    db.commit(); self._json({'code':0,'msg':'已取关'})
+                else:
+                    self._json({'code':1,'msg':'unknown action'},400)
             # Seller product CRUD
             elif path == '/api/product/add':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
@@ -792,16 +880,7 @@ class APIHandler(BaseHTTPRequestHandler):
                     db.execute("DELETE FROM favorites WHERE user_id=? AND product_id=?",(uid,pid))
                 db.commit()
                 self._json({'code':0,'msg':'ok'})
-            # Follow
-            elif path == '/api/follow':
-                if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
-                action = body.get('action','follow'); tid = body.get('target_id')
-                if action == 'follow':
-                    db.execute("INSERT OR IGNORE INTO follows (follower_id,following_id) VALUES (?,?)",(uid,tid))
-                elif action == 'unfollow':
-                    db.execute("DELETE FROM follows WHERE follower_id=? AND following_id=?",(uid,tid))
-                db.commit()
-                self._json({'code':0,'msg':'ok'})
+            # Follow 第二处已并入上面的合并分支，删除重复定义。
             # Group buys
             elif path == '/api/group_buys':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
@@ -962,6 +1041,49 @@ class APIHandler(BaseHTTPRequestHandler):
                     self._json({'code':0,'data':{'session_id':int(sid),'id':mid}})
                 else:
                     self._json({'code':1,'msg':'unknown action'})
+            else:
+                self._json({'code':1,'msg':'not found'},404)
+            db.close()
+        except Exception as e:
+            self._json({'code':1,'msg':str(e)},500)
+
+    def do_PUT(self):
+        # P0: api_client.updateCartItem 用 PUT，原来后端无处理必 405
+        path = urlparse(self.path).path
+        length = int(self.headers.get('Content-Length',0))
+        body = json.loads(self.rfile.read(length)) if length > 0 else {}
+        uid = self._uid()
+        try:
+            db = sqlite3.connect(DB_PATH); db.row_factory = sqlite3.Row
+            if path == '/api/cart':
+                if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
+                cid = body.get('id'); qty = body.get('quantity',1)
+                if not cid: self._json({'code':1,'msg':'缺少ID'},400); db.close(); return
+                if qty <= 0:
+                    db.execute("DELETE FROM cart WHERE id=? AND user_id=?",(cid,uid))
+                else:
+                    db.execute("UPDATE cart SET quantity=? WHERE id=? AND user_id=?",(qty,cid,uid))
+                db.commit(); self._json({'code':0,'msg':'ok'})
+            else:
+                self._json({'code':1,'msg':'not found'},404)
+            db.close()
+        except Exception as e:
+            self._json({'code':1,'msg':str(e)},500)
+
+    def do_DELETE(self):
+        # P0: api_client.removeCartItem 用 DELETE
+        path = urlparse(self.path).path
+        length = int(self.headers.get('Content-Length',0))
+        body = json.loads(self.rfile.read(length)) if length > 0 else {}
+        uid = self._uid()
+        try:
+            db = sqlite3.connect(DB_PATH); db.row_factory = sqlite3.Row
+            if path == '/api/cart':
+                if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
+                cid = body.get('id')
+                if not cid: self._json({'code':1,'msg':'缺少ID'},400); db.close(); return
+                db.execute("DELETE FROM cart WHERE id=? AND user_id=?",(cid,uid))
+                db.commit(); self._json({'code':0,'msg':'ok'})
             else:
                 self._json({'code':1,'msg':'not found'},404)
             db.close()

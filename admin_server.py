@@ -49,9 +49,16 @@ class ProxyHandler(SimpleHTTPRequestHandler):
         self.end_headers()
 
 os.chdir(os.path.dirname(__file__))
-ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
-ctx.load_cert_chain('cert.pem', 'key.pem')
-server = HTTPServer(('0.0.0.0', 8443), ProxyHandler)
-server.socket = ctx.wrap_socket(server.socket, server_side=True)
-print('HTTPS server on https://localhost:8443 (proxy /api/ -> 8081)')
+CERT = 'cert.pem'; KEY = 'key.pem'
+use_tls = os.path.isfile(CERT) and os.path.isfile(KEY)
+if use_tls:
+    ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
+    ctx.load_cert_chain(CERT, KEY)
+    server = HTTPServer(('0.0.0.0', 8443), ProxyHandler)
+    server.socket = ctx.wrap_socket(server.socket, server_side=True)
+    print('HTTPS server on https://localhost:8443 (proxy /api/ -> 8081)')
+else:
+    # ponytail: cert 不存在则回退纯 HTTP，避免开发机一启动就崩。安全性在真实部署时由反代负责
+    server = HTTPServer(('0.0.0.0', 8443), ProxyHandler)
+    print('HTTP server on http://localhost:8443 (no TLS: cert.pem/key.pem missing; proxy /api/ -> 8081)')
 server.serve_forever()
