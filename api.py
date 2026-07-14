@@ -458,12 +458,15 @@ class APIHandler(BaseHTTPRequestHandler):
             elif path == '/api/reviews':
                 pid = params.get('product_id',[''])[0]
                 rows = db.execute("SELECT r.*,u.nickname,u.avatar FROM reviews r LEFT JOIN users u ON r.user_id=u.id WHERE r.product_id=? ORDER BY r.id DESC",(pid,)).fetchall()
-                self._json([dict(r) for r in rows])
+                # P1-3: 加壳 {code:0,data:[]} 让前端 res.data['data'] as List 不抛
+                self._json({'code':0,'data':[dict(r) for r in rows]})
+                db.close(); return
             # Favorites
             elif path == '/api/favorites':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
                 rows = db.execute("SELECT f.*,p.name,p.price,p.image FROM favorites f LEFT JOIN products p ON f.product_id=p.id WHERE f.user_id=? ORDER BY f.id DESC",(uid,)).fetchall()
-                self._json([dict(r) for r in rows])
+                self._json({'code':0,'data':[dict(r) for r in rows]})
+                db.close(); return
             # User profile
             elif path.startswith('/api/user/') and 'profile' in path:
                 target_id = int(path.split('/')[-2]) if path.split('/')[-2].isdigit() else uid
