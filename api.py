@@ -398,7 +398,17 @@ class APIHandler(BaseHTTPRequestHandler):
                 self._json({'code':0,'data':[dict(r) for r in rows]})
                 db.close(); return
             if path == '/api/products':
-                rows = db.execute("SELECT * FROM products WHERE status=1 ORDER BY is_hot DESC, sales DESC").fetchall()
+                # P1-1: 支持 category_id 过滤 + page/limit 分页，前端 category_page 需要
+                cat_id = params.get('category_id',[None])[0]
+                page = int(params.get('page',['1'])[0] or 1)
+                limit = int(params.get('limit',['50'])[0] or 50)
+                if page < 1: page = 1
+                if limit < 1 or limit > 200: limit = 50
+                offset = (page - 1) * limit
+                if cat_id:
+                    rows = db.execute("SELECT * FROM products WHERE status=1 AND category_id=? ORDER BY is_hot DESC, sales DESC LIMIT ? OFFSET ?",(cat_id,limit,offset)).fetchall()
+                else:
+                    rows = db.execute("SELECT * FROM products WHERE status=1 ORDER BY is_hot DESC, sales DESC LIMIT ? OFFSET ?",(limit,offset)).fetchall()
                 self._json([dict(r) for r in rows])
             elif path == '/api/products/hot':
                 rows = db.execute("SELECT * FROM products WHERE is_hot=1 AND status=1 ORDER BY sales DESC LIMIT 10").fetchall()
