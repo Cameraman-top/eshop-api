@@ -514,8 +514,10 @@ class APIHandler(BaseHTTPRequestHandler):
                 db.close(); return
             # Seckill
             elif path == '/api/seckill':
-                rows = db.execute("SELECT s.*,p.name,p.image,p.price as original_price FROM seckill_events s LEFT JOIN products p ON s.product_id=p.id WHERE s.status!='ended' ORDER BY s.start_time").fetchall()
-                self._json([dict(r) for r in rows])
+                rows = db.execute("SELECT s.*,p.name,p.image,p.price as original_price, 0 as sold_count FROM seckill_events s LEFT JOIN products p ON s.product_id=p.id WHERE s.status!='ended' ORDER BY s.start_time").fetchall()
+                # P1-5: 加壳 + sold_count 字段(0 baseline,真实存量靠 stock 列；schema 未加 sold_count 列故 0 作 placeholder)
+                self._json({'code':0,'data':[dict(r) for r in rows]})
+                db.close(); return
             # Referral
             elif path == '/api/referral':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
@@ -529,11 +531,13 @@ class APIHandler(BaseHTTPRequestHandler):
             # Posts (种草)
             elif path == '/api/posts':
                 tid = params.get('topic_id',[''])[0]
+                # P1-6: 加 is_liked + like_count 子查询，前端 social_page 列表需要知道当前用户是否点赞
                 if tid:
-                    rows = db.execute("SELECT p.*,u.nickname,u.avatar FROM posts p LEFT JOIN users u ON p.user_id=u.id WHERE p.topic_id=? AND p.status=1 ORDER BY p.id DESC",(tid,)).fetchall()
+                    rows = db.execute("SELECT p.*,u.nickname,u.avatar,(CASE WHEN ? IS NULL THEN 0 WHEN EXISTS(SELECT 1 FROM post_likes WHERE post_id=p.id AND user_id=?) THEN 1 ELSE 0 END) as is_liked FROM posts p LEFT JOIN users u ON p.user_id=u.id WHERE p.topic_id=? AND p.status=1 ORDER BY p.id DESC",(uid,uid,tid)).fetchall()
                 else:
-                    rows = db.execute("SELECT p.*,u.nickname,u.avatar FROM posts p LEFT JOIN users u ON p.user_id=u.id WHERE p.status=1 ORDER BY p.id DESC LIMIT 30").fetchall()
-                self._json([dict(r) for r in rows])
+                    rows = db.execute("SELECT p.*,u.nickname,u.avatar,(CASE WHEN ? IS NULL THEN 0 WHEN EXISTS(SELECT 1 FROM post_likes WHERE post_id=p.id AND user_id=?) THEN 1 ELSE 0 END) as is_liked FROM posts p LEFT JOIN users u ON p.user_id=u.id WHERE p.status=1 ORDER BY p.id DESC LIMIT 30",(uid,uid)).fetchall()
+                self._json({'code':0,'data':[dict(r) for r in rows]})
+                db.close(); return
             elif path.startswith('/api/posts/') and len(path.split('/'))==4:
                 pid = path.split('/')[-1]
                 row = db.execute("SELECT p.*,u.nickname,u.avatar FROM posts p LEFT JOIN users u ON p.user_id=u.id WHERE p.id=?",(pid,)).fetchone()
@@ -787,6 +791,31 @@ class APIHandler(BaseHTTPRequestHandler):
                 if not order: self._json({'code':1,'msg':'订单不存在'},404); db.close(); return
                 items = db.execute("SELECT * FROM order_items WHERE order_id=?",(oid,)).fetchall()
                 self._json({'code':0,'data':{'order':dict(order),'items':[dict(i) for i in items]}})
+            # Seckill order — 秒杀价专用下单，前端 seckill_page 调这里
+            elif path == '/api/seckill/order':
+                if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
+                sid = body.get('seckill_id')
+                if not sid: self._json({'code':1,'msg':'缺少秒杀ID'},400); db.close(); return
+                ev = db.execute("SELECT * FROM seckill_events WHERE id=? AND status!='ended'",(sid,)).fetchone()
+                if not ev: self._json({'code':1,'msg':'秒杀不存在或已结束'},400); db.close(); return
+                # 时间窗校验
+                now = time.strftime('%Y-%m-%d %H:%M:%S',time.localtime())
+                if ev['start_time'] and now < ev['start_time']: self._json({'code':1,'msg':'秒杀未开始'},400); db.close(); return
+                if ev['end_time'] and now > ev['end_time']: self._json({'code':1,'msg':'秒杀已结束'},400); db.close(); return
+                # 库存
+                if ev['stock'] <= 0: self._json({'code':1,'msg':'已售罄'},400); db.close(); return
+                # 创建订单(按秒杀价)
+                total = ev['seckill_price']
+                p = db.execute("SELECT name,image FROM products WHERE id=?",(ev['product_id'],)).fetchone()
+                ono = 'SK'+time.strftime('%Y%m%d%H%M%S')+uuid.uuid4().hex[:4].upper()
+                db.execute("INSERT INTO orders (order_no,user_id,total,status,address) VALUES (?,?,?,'pending','{}')",(ono,uid,total))
+                oid = db.execute("SELECT last_insert_rowid()").fetchone()[0]
+                db.execute("INSERT INTO order_items (order_id,product_id,product_name,product_image,spec,price,quantity) VALUES (?,?,?,?,?,?,?)",(oid,ev['product_id'],p['name'] if p else '',p['image'] if p else '','秒杀',total,1))
+                db.execute("UPDATE seckill_events SET stock=stock-1 WHERE id=?",(sid,))
+                if ev['stock']-1 <= 0:
+                    db.execute("UPDATE seckill_events SET status='ended' WHERE id=?",(sid,))
+                db.commit()
+                self._json({'code':0,'data':{'order_id':oid,'order_no':ono,'total':total}})
             # Address
             elif path == '/api/addresses':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
