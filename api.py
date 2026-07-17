@@ -227,6 +227,11 @@ def init_db():
     if tc == 0:
         topics = [('数码','📱','手机电脑数码产品'),('穿搭','👗','时尚穿搭分享'),('美妆','💄','护肤化妆好物'),('家居','🏠','家居生活好物'),('美食','🍔','美食推荐'),('运动','⚽','运动户外装备')]
         db.executemany("INSERT INTO topics (name,icon,description) VALUES (?,?,?)", topics)
+    uc = db.execute("SELECT COUNT(*) FROM users").fetchone()[0]
+    if uc == 0:
+        import hashlib as _h
+        pwd = _h.sha256('123456'.encode()).hexdigest()
+        db.executemany("INSERT INTO users (phone,password,nickname) VALUES (?,?,?)", [('13800138000', pwd, '小明'), ('13900139000', pwd, '小红')])
     db.commit()
     db.close()
 
