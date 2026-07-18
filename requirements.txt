@@ -1,1 +1,1 @@
-# eShop API — zero external dependencies (stdlib only)
+libsql

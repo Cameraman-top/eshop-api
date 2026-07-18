@@ -1,17 +1,70 @@
 #!/usr/bin/env python3
-"""eShop Social API - Python + SQLite 零依赖 三层社交商城"""
+"""eShop Social API - Python + libSQL (Turso) 三层社交商城"""
 import json, sqlite3, hashlib, hmac, base64, time, os, uuid, mimetypes
+import libsql
 from http.server import HTTPServer, BaseHTTPRequestHandler
 from urllib.parse import urlparse, parse_qs
 
 DB_PATH = os.path.join(os.path.dirname(__file__), 'eshop.db')
+TURSO_URL = os.environ.get('TURSO_URL', '')
+TURSO_TOKEN = os.environ.get('TURSO_TOKEN', '')
+if not TURSO_URL:
+    _env = os.path.join(os.path.dirname(__file__), '.env')
+    if os.path.isfile(_env):
+        for _line in open(_env, encoding='utf-8'):
+            _line = _line.strip()
+            if _line and '=' in _line and not _line.startswith('#'):
+                _k, _v = _line.split('=', 1)
+                if _k == 'TURSO_URL' and not TURSO_URL: TURSO_URL = _v
+                if _k == 'TURSO_TOKEN' and not TURSO_TOKEN: TURSO_TOKEN = _v
 SECRET = b'eshop_secret_key_2024'
 
 # In-memory WebRTC signaling state
 rtc_rooms = {}  # {room_id: {host_id, title, viewers:set(), chat:[], offers:{}, answers:{}, ices:[]}}
 
+class _DictRow(dict):
+    def __getitem__(self, k):
+        if isinstance(k, int):
+            return list(self.values())[k]
+        return dict.__getitem__(self, k)
+
+class _WrapCursor:
+    def __init__(self, cur):
+        self._cur = cur
+        cols = [d[0] for d in (cur.description or [])]
+        self._cols = cols
+    def _row(self, r):
+        if r is None: return None
+        if not self._cols: return r
+        return _DictRow(zip(self._cols, r))
+    def fetchone(self): return self._row(self._cur.fetchone())
+    def fetchall(self): return [self._row(r) for r in self._cur.fetchall()]
+    def fetchmany(self, n): return [self._row(r) for r in self._cur.fetchmany(n)]
+    def __iter__(self): return (self._row(r) for r in self._cur)
+
+class _WrapConn:
+    def __init__(self, raw):
+        self._raw = raw
+    def execute(self, sql, args=()):
+        return _WrapCursor(self._raw.execute(sql, args))
+    def executemany(self, sql, args):
+        return self._raw.executemany(sql, args)
+    def executescript(self, sql):
+        return self._raw.executescript(sql)
+    def commit(self): return self._raw.commit()
+    def close(self): return self._raw.close()
+    @property
+    def row_factory(self): return None
+    @row_factory.setter
+    def row_factory(self, v): pass
+
+def _connect():
+    if TURSO_URL and TURSO_TOKEN:
+        return _WrapConn(libsql.connect(TURSO_URL, auth_token=TURSO_TOKEN))
+    return _WrapConn(libsql.connect(DB_PATH))
+
 def init_db():
-    db = sqlite3.connect(DB_PATH)
+    db = _connect()
     db.executescript("""
         CREATE TABLE IF NOT EXISTS users (
             id INTEGER PRIMARY KEY AUTOINCREMENT, phone TEXT NOT NULL UNIQUE,
@@ -313,7 +366,7 @@ class APIHandler(BaseHTTPRequestHandler):
             return
         uid = self._auth(params)
         try:
-            db = sqlite3.connect(DB_PATH); db.row_factory = sqlite3.Row
+            db = _connect()
             # Search
             if path == '/api/search':
                 q = params.get('q',[''])[0].strip()
@@ -641,7 +694,7 @@ class APIHandler(BaseHTTPRequestHandler):
         uid = self._uid()
         print(f'POST uid={uid}', file=sys.stderr)
         try:
-            db = sqlite3.connect(DB_PATH); db.row_factory = sqlite3.Row
+            db = _connect()
             print(f'POST routing...', file=sys.stderr)
             # User
             if path == '/api/user/register':
@@ -1101,7 +1154,7 @@ class APIHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length)) if length > 0 else {}
         uid = self._uid()
         try:
-            db = sqlite3.connect(DB_PATH); db.row_factory = sqlite3.Row
+            db = _connect()
             if path == '/api/cart':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
                 cid = body.get('id'); qty = body.get('quantity',1)
@@ -1124,7 +1177,7 @@ class APIHandler(BaseHTTPRequestHandler):
         body = json.loads(self.rfile.read(length)) if length > 0 else {}
         uid = self._uid()
         try:
-            db = sqlite3.connect(DB_PATH); db.row_factory = sqlite3.Row
+            db = _connect()
             if path == '/api/cart':
                 if not uid: self._json({'code':1,'msg':'请先登录'},401); db.close(); return
                 cid = body.get('id')
